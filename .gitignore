@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# training artefacts (regenerate with scripts/run_experiments.sh)
+runs/
+models/
+*.mp4
