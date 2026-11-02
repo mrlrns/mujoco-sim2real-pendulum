@@ -6,8 +6,12 @@ from stable_baselines3 import PPO
 
 from .env import SwingUpEnv
 
+# Observation noise is expressed relative to the signal scale: cos/sin are in [-1, 1],
+# omega is of the order of 10 rad/s during a swing-up.
+NOISE_SCALE = np.array([1.0, 1.0, 10.0])
 
-def evaluate(model, param, scale, n_ep=20):
+
+def evaluate(model, param, scale, n_ep=20, obs_noise=0.0):
     """Mean and std of the episode return when ``param`` is set to ``scale``.
 
     ``param`` is one of "gear", "mass", "damping" (factor of the nominal value)
@@ -15,15 +19,24 @@ def evaluate(model, param, scale, n_ep=20):
     parameter is perturbed at a time. All models see the same start states
     (reset seeds 1000..1000+n_ep-1), so comparisons are paired. The environment
     matches the observation size of the model (with or without previous action).
+
+    ``obs_noise`` (sigma, default 0 = no noise) adds Gaussian noise to [cos, sin, omega]
+    as seen by the policy, with std sigma * [1, 1, 10]. The noise draws are seeded per
+    episode, so they are identical for all models.
     """
     env = SwingUpEnv(prev_action=(model.observation_space.shape[0] == 4))  # no randomize: physics fixed below
     env.set_params(**{param: scale})
     returns = []
     for ep in range(n_ep):
         obs, _ = env.reset(seed=1000 + ep)
+        rng = np.random.default_rng(1000 + ep)
         done, total = False, 0.0
         while not done:
-            action, _ = model.predict(obs, deterministic=True)
+            seen = obs
+            if obs_noise > 0:
+                seen = obs.copy()
+                seen[:3] += rng.normal(0.0, obs_noise, 3) * NOISE_SCALE
+            action, _ = model.predict(seen, deterministic=True)
             obs, r, term, trunc, _ = env.step(action)
             total += r
             done = term or trunc

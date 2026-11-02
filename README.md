@@ -8,6 +8,12 @@ performance is lost and whether **domain randomization (DR)** helps.
 > Scope: everything runs in simulation. The "real" system is emulated by perturbing the simulator's
 > parameters, and the plant is a single pendulum. This is an exploration project, not a validated result on hardware.
 
+![full policy, nominal](assets/demo_nominal.gif)
+
+*`full` (seed 0) swings up and holds the pendulum at the top.* With a 100 ms command delay, the same task on
+`base` (return 84) and `full` (return 91), seed 0, start angle seed 0: see `assets/demo_base_delay100ms.gif` and
+`assets/demo_full_delay100ms.gif`. A single episode proves nothing; the statistics are below.
+
 ## Task and environment
 
 `sim2real/env.py` is a Gymnasium environment built on a hand-written MJCF model (`sim2real/model.py`):
@@ -77,13 +83,37 @@ What I take from it:
 - **Randomizing the delay alone is less effective and less reliable** than randomizing gain and mass: `lat2`/`lat5` stop at 120 ms and 1 to 3 of their 10 seeds score below 50 even without latency. `full` (gain, mass and delay together) has the highest threshold (180 ms) and no failed seed, although its gap with `dr` is within noise (see limitations).
 - **Previous action in the observation** helps the weakest families a little (`base` 80 → 100 ms, `lat5` 120 → 140 ms) and does nothing for `dr` and `full`.
 
+### 3. Outside the training distribution
+
+One perturbation at a time, standard observation, 10 seeds per family, 10 episodes per point
+(`scripts/sweep_ood.py`, figure `results/figures/ood.png`). "Range" = contiguous values around nominal where
+the median return over seeds stays above 50 (10% steps; sweep limits 0.5-1.5 for mass, 1.0-2.0 for gain).
+Seeds above 50 are given in brackets (out of 10).
+
+| Perturbation | base | dr | lat5 | full | trained on (dr, full) |
+|---|---|---|---|---|---|
+| Mass, range | 0.7-1.1 | 0.5-1.1 | 0.5-1.0 | 0.7-1.0 | 0.8-1.2 |
+| Mass x1.2 (seeds above 50) | 0 | 0 | 0 | 0 | |
+| Gain, range (above nominal) | 1.0-1.4 | 1.0-2.0 | 1.0-2.0 | 1.0-1.5 | 0.7-1.3 |
+| Gain x1.6 (seeds above 50) | 2 | 5 | 7 | 4 | |
+| Observation noise, range (sigma) | 0-0.05 | 0-0.05 | 0-0.05 | 0-0.05 | never |
+| Noise sigma 0.05 (seeds above 50) | 5 | 10 | 7 | 10 | |
+| Noise sigma 0.10 (seeds above 50) | 1 | 2 | 1 | 2 | |
+
+Observation noise has std sigma on cos and sin and 10 sigma on the angular velocity.
+
+- **Mass: the trained range is not covered.** At x1.2, which is inside the training range of `dr` and `full`, no seed of any family succeeds. The median already falls at x1.1 (`full` 34, `dr` 79). This is not a physical limit: a time-optimal bang-bang swing-up (value iteration on a simplified model of this pendulum, `scripts/feasibility.py`) reaches the top in about 117 control steps (2.3 s) at x1.2, and in 135 steps at x1.5, against 250 available. A heavier bob acts like a weaker motor (mass x1.2 is roughly gain x0.83), and the gain sweep shows the same failure: `dr` has 0 of 10 seeds above 50 for any gain between 0.7 and 0.85, although 0.7 to 1.3 is its training range. The policies simply did not learn the weak-motor corner, which needs several pumping swings; with 500k steps and a randomized motor, PPO ends up with a policy that works only close to nominal.
+- **Gain above the trained range:** `dr` keeps working up to x2.0 for half of its seeds, `full` stops around x1.5 and `base` around x1.4. The `lat5` median is high at large gain but 3 of its 10 seeds fail even at nominal.
+- **Observation noise:** none of the families was trained with it. `dr` and `full` hold every seed up to sigma 0.05 (`base`: 5 of 10), and all collapse at sigma 0.1. Randomization of gain and mass buys some tolerance to noise, but not a lot.
+- So `full` is **not** more robust than `dr` outside its training ranges, and the earlier claim that `full` is the most robust holds for latency only.
+
 ## Limitations
 
 - Simulation only, one degree of freedom, one task. The sim-to-real gap is emulated, not measured on a real system.
 - Thresholds are measured on a 20 ms grid with 10 episodes per point, and the start state only varies by ±0.1 rad. A one-step difference (e.g. `dr` 160 ms vs. `full` 180 ms) is within noise.
 - The curves have sharp cliffs (a policy works or collapses), so medians over 10 seeds move in jumps.
 - The failed seeds of the `lat*` families are not explained: it may just be that 500k steps are not enough with a hidden random delay.
-- `full` is only evaluated on perturbations similar to its training ranges; I did not test it on larger ranges or on perturbations it never saw (observation noise, different control frequency).
+- Out-of-distribution tests cover mass, gain and observation noise only, one at a time, on 10% steps. Combined perturbations, a different control frequency and non-Gaussian noise are not tested. The failure at mass x1.2 is not explained.
 
 ## Reproduce
 
@@ -96,17 +126,20 @@ python -m scripts.train --family dr --seed 0 --out models/dr_s0
 python -m scripts.watch --model models_demo/dr_s0.zip --out demo.mp4   # render a policy
 python -m sim2real.evaluate models_demo/dr_s0.zip                      # sensitivity table for one model
 
+python -m scripts.verify_repro                # re-evaluate the demo models and compare with the CSVs
 bash scripts/run_experiments.sh               # everything: 110 models, sweeps, figures (roughly one to two hours on a laptop CPU)
 ```
 
 The figures and tables above can be regenerated from the CSV files without MuJoCo:
-`python -m scripts.plot_gear results/data/gear_sweep_all.csv` and `python -m scripts.plot_compare`.
+`python -m scripts.plot_gear results/data/gear_sweep_all.csv`, `python -m scripts.plot_compare` and `python -m scripts.plot_ood`.
+The out-of-distribution CSV comes from `python -m scripts.sweep_ood --out results/data/ood_standard.csv` (run after the training).
+The full pipeline was re-run once on the final code, and it gives the same tables as above.
 
 ## Layout
 
 ```
 sim2real/       model.py (MJCF), env.py (Gymnasium env), evaluate.py (paired evaluation)
-scripts/        train, sweep_gear, sweep_latency, plot_gear, plot_compare, watch, run_experiments.sh
+scripts/        train, sweep_gear, sweep_latency, sweep_ood, plot_gear, plot_compare, plot_ood, watch, verify_repro, feasibility, run_experiments.sh
 tests/          environment checks
 results/        figures/ and data/ (raw sweep CSVs behind every figure)
 models_demo/    three trained policies (base, dr, full; seed 0)
@@ -114,5 +147,5 @@ models_demo/    three trained policies (base, dr, full; seed 0)
 
 ## Possible next steps
 
-Test `full` outside its training ranges and on a perturbation it never saw, add observation noise, train the
+Explain the mass failure (train with wider ranges or a stronger motor), randomize observation noise, train the
 `lat*` families longer, and try the same pipeline on a system with more degrees of freedom.

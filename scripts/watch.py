@@ -2,6 +2,8 @@
 
     python -m scripts.watch --model models_demo/dr_s0.zip --out demo.mp4
     python -m scripts.watch --model models_demo/dr_s0.zip --gear 0.9 --delay 4 --out demo_perturbed.mp4
+    python -m scripts.watch --model models_demo/full_s0.zip --out assets/demo_nominal.gif   # GIF for the README
+A .gif output is subsampled (every 2nd frame, 25 fps) and downscaled to 480 px wide.
 """
 import argparse
 
@@ -18,6 +20,7 @@ ap.add_argument("--mass", type=float, default=1.0)
 ap.add_argument("--delay", type=int, default=0, help="action latency in control steps (20 ms each)")
 ap.add_argument("--seed", type=int, default=0)
 ap.add_argument("--out", default="demo.mp4")
+ap.add_argument("--width", type=int, default=480, help="GIF width in pixels")
 a = ap.parse_args()
 
 model = PPO.load(a.model, device="cpu")
@@ -35,5 +38,11 @@ while not done:
     renderer.update_scene(env.data, camera="cam")
     frames.append(renderer.render())
 
-imageio.mimsave(a.out, frames, fps=50)       # 50 control steps = 1 s of simulated time
+if a.out.lower().endswith(".gif"):
+    from PIL import Image
+    h = round(a.width * frames[0].shape[0] / frames[0].shape[1])
+    small = [Image.fromarray(f).resize((a.width, h), Image.LANCZOS) for f in frames[::2]]
+    small[0].save(a.out, save_all=True, append_images=small[1:], duration=40, loop=0, optimize=True)
+else:
+    imageio.mimsave(a.out, frames, fps=50)   # 50 control steps = 1 s of simulated time
 print(f"episode return: {total:.1f} -> {a.out}")
